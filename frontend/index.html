@@ -1,0 +1,815 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Self-Healing RAG</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        :root {
+            --bg: #0f1117;
+            --surface: #1a1d27;
+            --surface2: #22263a;
+            --accent: #6c63ff;
+            --accent2: #a78bfa;
+            --text: #e2e8f0;
+            --text-muted: #94a3b8;
+            --success: #10b981;
+            --warning: #f59e0b;
+            --error: #ef4444;
+            --radius: 12px;
+        }
+
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: var(--bg);
+            color: var(--text);
+            line-height: 1.6;
+        }
+
+        .container {
+            max-width: 900px;
+            margin: 0 auto;
+            padding: 20px;
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+
+        /* ===== HEADER ===== */
+        .header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            margin-bottom: 40px;
+            gap: 20px;
+        }
+
+        .header-content h1 {
+            font-size: 28px;
+            font-weight: 700;
+            margin-bottom: 4px;
+        }
+
+        .header-content h1 span {
+            margin-right: 8px;
+        }
+
+        .header-content p {
+            color: var(--text-muted);
+            font-size: 14px;
+        }
+
+        .status-pill {
+            padding: 8px 14px;
+            border-radius: 20px;
+            font-size: 13px;
+            font-weight: 500;
+            background-color: var(--surface2);
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            white-space: nowrap;
+        }
+
+        .status-pill.online {
+            color: var(--success);
+        }
+
+        .status-pill.offline {
+            color: var(--error);
+        }
+
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            display: inline-block;
+        }
+
+        /* ===== QUERY SECTION ===== */
+        .query-section {
+            margin-bottom: 30px;
+        }
+
+        .query-input-wrapper {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+
+        textarea {
+            background-color: var(--surface2);
+            border: 1px solid rgba(148, 163, 184, 0.2);
+            border-radius: var(--radius);
+            color: var(--text);
+            padding: 14px 16px;
+            font-family: 'Inter', sans-serif;
+            font-size: 15px;
+            resize: vertical;
+            min-height: 80px;
+            transition: all 0.2s ease;
+        }
+
+        textarea:focus {
+            outline: none;
+            border-color: var(--accent);
+            background-color: var(--surface);
+        }
+
+        textarea::placeholder {
+            color: var(--text-muted);
+        }
+
+        .button-group {
+            display: flex;
+            gap: 10px;
+        }
+
+        button {
+            padding: 10px 20px;
+            border-radius: var(--radius);
+            border: none;
+            font-family: 'Inter', sans-serif;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .btn-primary {
+            background-color: var(--accent);
+            color: white;
+            flex: 1;
+        }
+
+        .btn-primary:hover:not(:disabled) {
+            background-color: var(--accent2);
+            transform: translateY(-2px);
+        }
+
+        .btn-primary:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+
+        .spinner {
+            width: 16px;
+            height: 16px;
+            border: 2px solid rgba(255, 255, 255, 0.3);
+            border-top: 2px solid white;
+            border-radius: 50%;
+            animation: spin 0.6s linear infinite;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        /* ===== RESULTS SECTION ===== */
+        .results-section {
+            display: none;
+            animation: fadeIn 0.3s ease;
+            margin-bottom: 30px;
+        }
+
+        .results-section.visible {
+            display: block;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        .card {
+            background-color: var(--surface);
+            border: 1px solid rgba(148, 163, 184, 0.1);
+            border-radius: var(--radius);
+            padding: 20px;
+            margin-bottom: 16px;
+        }
+
+        .answer-card {
+            background: linear-gradient(135deg, var(--surface) 0%, var(--surface2) 100%);
+        }
+
+        .answer-card h3 {
+            font-size: 13px;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 12px;
+            font-weight: 600;
+        }
+
+        .answer-text {
+            font-size: 16px;
+            line-height: 1.7;
+            color: var(--text);
+        }
+
+        .metadata-card {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 16px;
+        }
+
+        .metadata-item {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+
+        .metadata-label {
+            font-size: 12px;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            font-weight: 600;
+        }
+
+        .metadata-value {
+            font-size: 14px;
+            color: var(--text);
+            font-weight: 500;
+        }
+
+        .badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 4px 8px;
+            background-color: var(--surface2);
+            border-radius: 6px;
+            font-size: 13px;
+            width: fit-content;
+        }
+
+        .badge.badge-success {
+            background-color: rgba(16, 185, 129, 0.1);
+            color: var(--success);
+        }
+
+        .badge.badge-warning {
+            background-color: rgba(245, 158, 11, 0.1);
+            color: var(--warning);
+        }
+
+        .badge.badge-error {
+            background-color: rgba(239, 68, 68, 0.1);
+            color: var(--error);
+        }
+
+        .critique-text {
+            font-size: 13px;
+            color: var(--text-muted);
+            font-style: italic;
+            grid-column: 1 / -1;
+            margin-top: 8px;
+        }
+
+        .healed-banner {
+            background-color: rgba(245, 158, 11, 0.1);
+            border: 1px solid rgba(245, 158, 11, 0.3);
+            border-radius: var(--radius);
+            padding: 12px 16px;
+            margin-bottom: 16px;
+            color: var(--warning);
+            font-size: 14px;
+            font-weight: 500;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        /* ===== SOURCES SECTION ===== */
+        .collapsible-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            cursor: pointer;
+            padding: 12px 0;
+            user-select: none;
+        }
+
+        .collapsible-header:hover {
+            color: var(--accent);
+        }
+
+        .collapsible-icon {
+            font-size: 16px;
+            transition: transform 0.2s ease;
+        }
+
+        .collapsible-content {
+            max-height: 0;
+            overflow: hidden;
+            transition: max-height 0.2s ease;
+        }
+
+        .collapsible-content.open {
+            max-height: 1000px;
+        }
+
+        .sources-list {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+            margin-top: 12px;
+        }
+
+        .source-item {
+            background-color: var(--surface2);
+            border-left: 3px solid var(--accent);
+            padding: 12px 14px;
+            border-radius: 4px;
+            font-size: 13px;
+            line-height: 1.6;
+            color: var(--text-muted);
+        }
+
+        .source-number {
+            font-weight: 600;
+            color: var(--accent);
+            display: block;
+            margin-bottom: 4px;
+            font-size: 11px;
+        }
+
+        /* ===== INGEST SECTION ===== */
+        .ingest-section {
+            margin-top: 30px;
+            border-top: 1px solid rgba(148, 163, 184, 0.1);
+            padding-top: 20px;
+        }
+
+        .ingest-content {
+            max-height: 0;
+            overflow: hidden;
+            transition: max-height 0.2s ease;
+        }
+
+        .ingest-content.open {
+            max-height: 500px;
+        }
+
+        .ingest-input-wrapper {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+            margin-top: 12px;
+        }
+
+        .btn-secondary {
+            background-color: var(--surface2);
+            color: var(--text);
+            border: 1px solid rgba(148, 163, 184, 0.2);
+        }
+
+        .btn-secondary:hover {
+            background-color: var(--surface);
+            border-color: var(--accent);
+            color: var(--accent);
+        }
+
+        /* ===== TOAST NOTIFICATIONS ===== */
+        .toast {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            background-color: var(--surface);
+            color: var(--text);
+            padding: 14px 18px;
+            border-radius: var(--radius);
+            border-left: 4px solid var(--accent);
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.3);
+            animation: slideIn 0.3s ease;
+            max-width: 400px;
+            font-size: 14px;
+            z-index: 1000;
+        }
+
+        .toast.success {
+            border-left-color: var(--success);
+        }
+
+        .toast.error {
+            border-left-color: var(--error);
+        }
+
+        @keyframes slideIn {
+            from {
+                transform: translateX(400px);
+                opacity: 0;
+            }
+            to {
+                transform: translateX(0);
+                opacity: 1;
+            }
+        }
+
+        @keyframes slideOut {
+            from {
+                transform: translateX(0);
+                opacity: 1;
+            }
+            to {
+                transform: translateX(400px);
+                opacity: 0;
+            }
+        }
+
+        .toast.hide {
+            animation: slideOut 0.3s ease forwards;
+        }
+
+        /* ===== ERROR STATE ===== */
+        .error-message {
+            background-color: rgba(239, 68, 68, 0.1);
+            border: 1px solid rgba(239, 68, 68, 0.3);
+            border-radius: var(--radius);
+            padding: 14px 16px;
+            color: var(--error);
+            font-size: 14px;
+            margin-bottom: 16px;
+            display: none;
+        }
+
+        .error-message.visible {
+            display: block;
+        }
+
+        /* ===== RESPONSIVE ===== */
+        @media (max-width: 640px) {
+            .container {
+                padding: 16px;
+            }
+
+            .header {
+                flex-direction: column;
+                margin-bottom: 30px;
+            }
+
+            .header-content h1 {
+                font-size: 24px;
+            }
+
+            .status-pill {
+                align-self: flex-start;
+            }
+
+            .metadata-card {
+                grid-template-columns: 1fr;
+            }
+
+            .button-group {
+                flex-direction: column;
+            }
+
+            .btn-primary {
+                width: 100%;
+            }
+
+            .toast {
+                right: 16px;
+                left: 16px;
+                max-width: none;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <!-- HEADER -->
+        <header class="header">
+            <div class="header-content">
+                <h1><span>🧠</span>Self-Healing RAG</h1>
+                <p>Powered by LangGraph + ChromaDB</p>
+            </div>
+            <div class="status-pill offline" id="statusPill">
+                <span class="status-dot" id="statusDot"></span>
+                <span id="statusText">Loading...</span>
+            </div>
+        </header>
+
+        <!-- ERROR MESSAGE -->
+        <div class="error-message" id="errorMessage"></div>
+
+        <!-- QUERY SECTION -->
+        <section class="query-section">
+            <div class="query-input-wrapper">
+                <textarea id="queryInput" placeholder="Ask anything about the ingested documents..."></textarea>
+                <div class="button-group">
+                    <button class="btn-primary" id="askButton" onclick="submitQuery()">
+                        Ask
+                    </button>
+                </div>
+            </div>
+        </section>
+
+        <!-- RESULTS SECTION -->
+        <section class="results-section" id="resultsSection">
+            <!-- Self-healed banner (shown conditionally) -->
+            <div class="healed-banner" id="healedBanner" style="display: none;">
+                🔄 Self-healed! This answer was refined after verification.
+            </div>
+
+            <!-- Answer Card -->
+            <div class="answer-card card">
+                <h3>Answer</h3>
+                <div class="answer-text" id="answerText"></div>
+            </div>
+
+            <!-- Metadata Card -->
+            <div class="card">
+                <div class="metadata-card">
+                    <div class="metadata-item">
+                        <div class="metadata-label">Retries</div>
+                        <div class="badge" id="retriesBadge">
+                            <span>—</span>
+                        </div>
+                    </div>
+                    <div class="metadata-item">
+                        <div class="metadata-label">Groundedness</div>
+                        <div class="badge" id="groundedBadge">
+                            <span>—</span>
+                        </div>
+                    </div>
+                    <div class="critique-text" id="critiqueText"></div>
+                </div>
+            </div>
+
+            <!-- Sources Card -->
+            <div class="card">
+                <div class="collapsible-header" onclick="toggleSources()">
+                    <span>📚 Retrieved Sources</span>
+                    <span class="collapsible-icon" id="sourcesIcon">▼</span>
+                </div>
+                <div class="collapsible-content open" id="sourcesContent">
+                    <div class="sources-list" id="sourcesList"></div>
+                </div>
+            </div>
+        </section>
+
+        <!-- INGEST SECTION -->
+        <section class="ingest-section">
+            <div class="collapsible-header" onclick="toggleIngest()">
+                <span>➕ Add Documents</span>
+                <span class="collapsible-icon" id="ingestIcon">▶</span>
+            </div>
+            <div class="ingest-content" id="ingestContent">
+                <div class="ingest-input-wrapper">
+                    <textarea id="ingestInput" placeholder="Paste your documents here (separated by blank lines for chunks)..." style="min-height: 120px;"></textarea>
+                    <button class="btn-primary" onclick="submitIngest()">
+                        Ingest
+                    </button>
+                </div>
+            </div>
+        </section>
+    </div>
+
+    <script>
+        const API_BASE = "http://localhost:8000";
+        let isLoading = false;
+
+        // ===== INITIALIZATION =====
+        document.addEventListener('DOMContentLoaded', () => {
+            checkHealth();
+            setupKeyboardShortcuts();
+        });
+
+        // ===== KEYBOARD SHORTCUTS =====
+        function setupKeyboardShortcuts() {
+            document.getElementById('queryInput').addEventListener('keydown', (e) => {
+                if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+                    e.preventDefault();
+                    submitQuery();
+                }
+            });
+        }
+
+        // ===== HEALTH CHECK =====
+        async function checkHealth() {
+            try {
+                const response = await fetch(`${API_BASE}/health`, {
+                    method: 'GET',
+                    headers: { 'Content-Type': 'application/json' }
+                });
+                const data = await response.json();
+                updateStatusPill(true, data.collection_count);
+            } catch (error) {
+                updateStatusPill(false, 0);
+            }
+        }
+
+        function updateStatusPill(isOnline, docCount) {
+            const pill = document.getElementById('statusPill');
+            const dot = document.getElementById('statusDot');
+            const text = document.getElementById('statusText');
+
+            if (isOnline) {
+                pill.classList.remove('offline');
+                pill.classList.add('online');
+                dot.style.backgroundColor = 'var(--success)';
+                text.textContent = `● ${docCount} docs loaded`;
+            } else {
+                pill.classList.remove('online');
+                pill.classList.add('offline');
+                dot.style.backgroundColor = 'var(--error)';
+                text.textContent = '● Offline';
+            }
+        }
+
+        // ===== QUERY SUBMISSION =====
+        async function submitQuery() {
+            const query = document.getElementById('queryInput').value.trim();
+            
+            if (!query) {
+                showError('Please enter a query');
+                return;
+            }
+
+            if (isLoading) return;
+
+            isLoading = true;
+            updateQueryButton(true);
+            hideError();
+
+            try {
+                const response = await fetch(`${API_BASE}/query`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ query })
+                });
+
+                if (!response.ok) {
+                    const errorData = await response.json();
+                    throw new Error(errorData.detail || 'Failed to process query');
+                }
+
+                const data = await response.json();
+                displayResults(data);
+                showToast('Query processed successfully!', 'success');
+            } catch (error) {
+                showError(`Error: ${error.message}`);
+                console.error('Query error:', error);
+            } finally {
+                isLoading = false;
+                updateQueryButton(false);
+            }
+        }
+
+        function updateQueryButton(loading) {
+            const button = document.getElementById('askButton');
+            if (loading) {
+                button.disabled = true;
+                button.innerHTML = '<span class="spinner"></span>Thinking...';
+            } else {
+                button.disabled = false;
+                button.innerHTML = 'Ask';
+            }
+        }
+
+        // ===== DISPLAY RESULTS =====
+        function displayResults(data) {
+            const resultsSection = document.getElementById('resultsSection');
+            resultsSection.classList.add('visible');
+
+            // Show healed banner if retried
+            const healedBanner = document.getElementById('healedBanner');
+            if (data.retry_count > 0) {
+                healedBanner.style.display = 'flex';
+            } else {
+                healedBanner.style.display = 'none';
+            }
+
+            // Answer
+            document.getElementById('answerText').textContent = data.final_answer;
+
+            // Metadata
+            const retryBadge = document.getElementById('retriesBadge');
+            let retryBadgeClass = 'badge-success';
+            if (data.retry_count === 1) retryBadgeClass = 'badge-warning';
+            if (data.retry_count >= 2) retryBadgeClass = 'badge-error';
+            
+            retryBadge.className = `badge ${retryBadgeClass}`;
+            retryBadge.innerHTML = `<span>${data.retry_count}</span>`;
+
+            const groundedBadge = document.getElementById('groundedBadge');
+            groundedBadge.className = `badge ${data.is_grounded ? 'badge-success' : 'badge-error'}`;
+            groundedBadge.innerHTML = data.is_grounded 
+                ? '<span>✓ Yes</span>' 
+                : '<span>✗ No</span>';
+
+            // Critique
+            document.getElementById('critiqueText').textContent = data.critique || '—';
+
+            // Sources
+            const sourcesList = document.getElementById('sourcesList');
+            sourcesList.innerHTML = '';
+            if (data.retrieved_chunks && data.retrieved_chunks.length > 0) {
+                data.retrieved_chunks.forEach((chunk, index) => {
+                    const item = document.createElement('div');
+                    item.className = 'source-item';
+                    item.innerHTML = `
+                        <span class="source-number">Source ${index + 1}</span>
+                        ${escapeHtml(chunk)}
+                    `;
+                    sourcesList.appendChild(item);
+                });
+            }
+
+            // Scroll to results
+            resultsSection.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        }
+
+        // ===== INGEST DOCUMENTS =====
+        async function submitIngest() {
+            const text = document.getElementById('ingestInput').value.trim();
+            
+            if (!text) {
+                showError('Please enter documents to ingest');
+                return;
+            }
+
+            try {
+                const response = await fetch(`${API_BASE}/ingest`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ texts: [text] })
+                });
+
+                if (!response.ok) {
+                    const errorData = await response.json();
+                    throw new Error(errorData.detail || 'Failed to ingest documents');
+                }
+
+                const data = await response.json();
+                document.getElementById('ingestInput').value = '';
+                toggleIngest();
+                showToast(`Successfully ingested ${data.chunks_added} chunks!`, 'success');
+                checkHealth();
+            } catch (error) {
+                showError(`Ingest error: ${error.message}`);
+                console.error('Ingest error:', error);
+            }
+        }
+
+        // ===== UI HELPERS =====
+        function toggleIngest() {
+            const content = document.getElementById('ingestContent');
+            const icon = document.getElementById('ingestIcon');
+            content.classList.toggle('open');
+            icon.textContent = content.classList.contains('open') ? '▼' : '▶';
+        }
+
+        function toggleSources() {
+            const content = document.getElementById('sourcesContent');
+            const icon = document.getElementById('sourcesIcon');
+            content.classList.toggle('open');
+            icon.textContent = content.classList.contains('open') ? '▼' : '▶';
+        }
+
+        function showError(message) {
+            const errorDiv = document.getElementById('errorMessage');
+            errorDiv.textContent = message;
+            errorDiv.classList.add('visible');
+        }
+
+        function hideError() {
+            document.getElementById('errorMessage').classList.remove('visible');
+        }
+
+        function showToast(message, type = 'success') {
+            const toast = document.createElement('div');
+            toast.className = `toast ${type}`;
+            toast.textContent = message;
+            document.body.appendChild(toast);
+
+            setTimeout(() => {
+                toast.classList.add('hide');
+                setTimeout(() => toast.remove(), 300);
+            }, 3000);
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+    </script>
+</body>
+</html>

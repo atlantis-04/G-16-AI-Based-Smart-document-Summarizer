@@ -1,0 +1,9 @@
+.env
+__pycache__
+*.pyc
+chroma_db/
+.venv/
+.idea/
+*.egg-info/
+dist/
+build/
