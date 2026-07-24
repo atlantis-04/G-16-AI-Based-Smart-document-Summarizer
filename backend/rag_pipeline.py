@@ -4,7 +4,8 @@ from typing import TypedDict
 from langgraph.graph import StateGraph, END
 from langchain_core.messages import HumanMessage
 from backend.config import settings
-from backend.retriever import ChromaRetriever
+from backend.hybrid_retriever import HybridRetriever as ChromaRetriever
+from backend.reranker import Reranker
 
 logger = logging.getLogger(__name__)
 
@@ -38,18 +39,22 @@ class RAGState(TypedDict):
     retry_count: int                # how many retries so far
     final_answer: str               # what we return to user
     error: str                      # any error message
+    conversation_history: list[dict] # previous user/assistant exchanges
+    is_followup: bool               # whether this is a follow-up question
+    collection_name: str            # active ChromaDB collection
 
 
 def retrieve_node(state: RAGState) -> dict:
     """Retrieve relevant documents from ChromaDB."""
-    retriever = ChromaRetriever()
+    retriever = ChromaRetriever(collection_name=state.get("collection_name", "rag_docs"))
     
     # Use reformulated query if retrying, otherwise use original query
     query_to_use = state["reformulated_query"] if state["retry_count"] > 0 else state["query"]
     
     try:
-        chunks = retriever.retrieve(query_to_use, n_results=5)
-        return {"retrieved_chunks": chunks}
+        chunks = retriever.retrieve(query_to_use, n_results=10)
+        reranked_chunks = Reranker().rerank(query_to_use, chunks, top_k=3)
+        return {"retrieved_chunks": reranked_chunks}
     except Exception as e:
         logger.error(f"Retrieval error: {e}")
         return {
@@ -68,8 +73,25 @@ def generate_node(state: RAGState) -> dict:
     context_parts = [chunk["text"] for chunk in state["retrieved_chunks"]]
     context = "\n---\n".join(context_parts)
     
-    # Build prompt
-    prompt = f"""Answer the question based ONLY on the context below.
+    history = state.get("conversation_history", [])
+    if history:
+        formatted_history = "\n".join(
+            f"{'User' if item.get('role') == 'user' else 'Assistant'}: {item.get('content', '')}"
+            for item in history
+        )
+        prompt = f"""Previous conversation:
+{formatted_history}
+
+Now answer the new question based on context and conversation history. Use the retrieved context as the primary source.
+
+Context: 
+{context}
+
+Question: {state["query"]}
+
+Answer:"""
+    else:
+        prompt = f"""Answer the question based ONLY on the context below.
 
 Context: 
 {context}
@@ -222,7 +244,11 @@ def build_graph():
     return workflow.compile()
 
 
-def run_pipeline(query: str) -> dict:
+def run_pipeline(
+    query: str,
+    conversation_history: list[dict] = None,
+    collection_name: str = "rag_docs"
+) -> dict:
     """
     Run the complete RAG pipeline.
     
@@ -234,6 +260,9 @@ def run_pipeline(query: str) -> dict:
     """
     graph = build_graph()
     
+    if conversation_history is None:
+        conversation_history = []
+
     # Create initial state
     initial_state = {
         "query": query,
@@ -244,20 +273,38 @@ def run_pipeline(query: str) -> dict:
         "is_grounded": False,
         "retry_count": 0,
         "final_answer": "",
-        "error": ""
+        "error": "",
+        "conversation_history": conversation_history,
+        "is_followup": bool(conversation_history),
+        "collection_name": collection_name
     }
     
     # Run the pipeline
     result = graph.invoke(initial_state)
     
-    # Extract texts from chunks for response
-    chunk_texts = [chunk["text"] for chunk in result.get("retrieved_chunks", [])]
-    
-    return {
-        "final_answer": result.get("final_answer", ""),
-        "critique": result.get("critique", ""),
-        "retry_count": result.get("retry_count", 0),
-        "retrieved_chunks": chunk_texts,
-        "error": result.get("error", "")
-    }
+    final_answer = result["final_answer"]
+    updated_history = conversation_history + [
+        {"role": "user", "content": query},
+        {"role": "assistant", "content": final_answer}
+    ]
 
+    return {
+        "final_answer": final_answer,
+        "critique": result["critique"],
+        "retry_count": result["retry_count"],
+        "retrieved_chunks": [
+            {
+                "text": c["text"] if isinstance(c, dict) else c,
+                "semantic_score": round(c.get("semantic_score", 0), 3) if isinstance(c, dict) else 0,
+                "bm25_score": round(c.get("bm25_score", 0), 3) if isinstance(c, dict) else 0,
+                "final_score": round(c.get("final_score", 0), 3) if isinstance(c, dict) else 0,
+                "rerank_score": round(
+                    min(max((c.get("rerank_score", 0) + 10) / 20, 0), 1), 3
+                ) if isinstance(c, dict) else 0,
+                "metadata": c.get("metadata", {}) if isinstance(c, dict) else {}
+            }
+            for c in result.get("retrieved_chunks", [])
+        ],
+        "is_grounded": bool(result.get("is_grounded", False)),
+        "conversation_history": updated_history,
+    }

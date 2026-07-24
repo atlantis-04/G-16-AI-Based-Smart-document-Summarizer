@@ -1,10 +1,14 @@
 import logging
-from fastapi import FastAPI, HTTPException
+from pathlib import Path
+import shutil
+
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from backend.rag_pipeline import run_pipeline
 from backend.retriever import ChromaRetriever
 from backend.config import settings
+from backend.pdf_loader import extract_text_from_pdf
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 import os
@@ -15,6 +19,7 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+ACTIVE_COLLECTION = "rag_docs"
 
 # Create FastAPI app
 app = FastAPI(
@@ -43,6 +48,8 @@ class QueryRequest(BaseModel):
     """Request model for RAG query."""
     query: str
     max_results: int = 5
+    conversation_history: list[dict] = []
+    collection_name: str = "rag_docs"
 
 
 class QueryResponse(BaseModel):
@@ -50,15 +57,17 @@ class QueryResponse(BaseModel):
     final_answer: str
     critique: str
     retry_count: int
-    retrieved_chunks: list[str]
+    retrieved_chunks: list[dict]
     is_grounded: bool
     query: str
+    conversation_history: list[dict] = []
 
 
 class IngestRequest(BaseModel):
     """Request model for document ingestion."""
     texts: list[str]
     metadatas: list[dict] = []
+    collection_name: str = "rag_docs"
 
 
 class IngestResponse(BaseModel):
@@ -72,6 +81,11 @@ class HealthResponse(BaseModel):
     status: str
     collection_count: int
     model: str
+
+
+class CollectionRequest(BaseModel):
+    """Request model for collection operations."""
+    collection_name: str
 
 
 # ============================================================================
@@ -95,7 +109,7 @@ def health_check():
     Returns status, document count, and active model.
     """
     try:
-        retriever = ChromaRetriever()
+        retriever = ChromaRetriever(collection_name=ACTIVE_COLLECTION)
         collection_count = retriever.collection_count()
         
         return HealthResponse(
@@ -111,6 +125,67 @@ def health_check():
 def serve_frontend():
     """Serve the frontend app."""
     return FileResponse("frontend/index.html")
+
+
+@app.get("/collections")
+def list_collections():
+    """List all available ChromaDB collections with document counts."""
+    try:
+        retriever = ChromaRetriever(collection_name=ACTIVE_COLLECTION)
+        collections = []
+
+        for collection in retriever.client.list_collections():
+            name = collection.name if hasattr(collection, "name") else str(collection)
+            collection_retriever = ChromaRetriever(collection_name=name)
+            collections.append({
+                "name": name,
+                "count": collection_retriever.collection_count()
+            })
+
+        return {"collections": collections}
+    except Exception as e:
+        logger.error(f"Collection listing error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Could not list collections: {str(e)}")
+
+
+@app.post("/collections/create")
+def create_collection(request: CollectionRequest):
+    """Create a new ChromaDB collection."""
+    collection_name = request.collection_name.strip()
+    if not collection_name:
+        raise HTTPException(status_code=400, detail="Collection name cannot be empty")
+
+    try:
+        ChromaRetriever(collection_name=collection_name)
+        return {
+            "created": collection_name,
+            "message": f"Collection '{collection_name}' is ready"
+        }
+    except Exception as e:
+        logger.error(f"Collection create error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Could not create collection: {str(e)}")
+
+
+@app.post("/switch-collection")
+def switch_collection(request: CollectionRequest):
+    """Switch the server-side active collection used by default endpoints."""
+    global ACTIVE_COLLECTION
+
+    collection_name = request.collection_name.strip()
+    if not collection_name:
+        raise HTTPException(status_code=400, detail="Collection name cannot be empty")
+
+    try:
+        retriever = ChromaRetriever(collection_name=collection_name)
+        ACTIVE_COLLECTION = collection_name
+        return {
+            "active_collection": ACTIVE_COLLECTION,
+            "count": retriever.collection_count(),
+            "message": f"Switched to collection '{ACTIVE_COLLECTION}'"
+        }
+    except Exception as e:
+        logger.error(f"Collection switch error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Could not switch collection: {str(e)}")
 
 @app.post("/query", response_model=QueryResponse)
 def query_endpoint(request: QueryRequest):
@@ -134,12 +209,13 @@ def query_endpoint(request: QueryRequest):
         logger.info(f"Processing query: {request.query[:100]}")
         
         # Run the RAG pipeline
-        result = run_pipeline(request.query)
+        result = run_pipeline(
+            request.query,
+            conversation_history=request.conversation_history,
+            collection_name=request.collection_name
+        )
         
-        # Extract grounded status from critique if available
-        # The critic_node sets is_grounded in the state
-        is_grounded = result.get("critique", "").lower().find("grounded") >= 0 or \
-                      result.get("retry_count", 0) == 0
+        is_grounded = result.get("is_grounded", False)
         
         # Map pipeline result to response model
         response = QueryResponse(
@@ -148,7 +224,8 @@ def query_endpoint(request: QueryRequest):
             retry_count=result.get("retry_count", 0),
             retrieved_chunks=result.get("retrieved_chunks", []),
             is_grounded=is_grounded,
-            query=request.query
+            query=request.query,
+            conversation_history=result.get("conversation_history", [])
         )
         
         logger.info(f"Query processed successfully. Retries: {response.retry_count}")
@@ -174,9 +251,9 @@ def ingest_endpoint(request: IngestRequest):
         raise HTTPException(status_code=400, detail="Texts list cannot be empty")
     
     try:
-        logger.info(f"Ingesting {len(request.texts)} documents")
+        logger.info(f"Ingesting {len(request.texts)} documents into {request.collection_name}")
         
-        retriever = ChromaRetriever()
+        retriever = ChromaRetriever(collection_name=request.collection_name)
         
         # Prepare metadatas if not provided
         metadatas = request.metadatas if request.metadatas else None
@@ -202,6 +279,54 @@ def ingest_endpoint(request: IngestRequest):
         )
 
 
+@app.post("/upload-pdf")
+def upload_pdf(
+    file: UploadFile = File(...),
+    collection_name: str = Form("rag_docs")
+):
+    """Upload a PDF, extract chunks, and ingest them into a ChromaDB collection."""
+    filename = Path(file.filename or "").name
+    if not filename or not filename.lower().endswith(".pdf"):
+        raise HTTPException(status_code=400, detail="Only PDF files are supported")
+
+    temp_dir = Path("./temp_uploads")
+    temp_dir.mkdir(exist_ok=True)
+    temp_path = temp_dir / filename
+
+    try:
+        with temp_path.open("wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+
+        chunks = extract_text_from_pdf(str(temp_path))
+        texts = [chunk["text"] for chunk in chunks]
+        metadatas = [
+            {
+                "source": filename,
+                "type": "pdf_upload",
+                "page": chunk.get("metadata", {}).get("page", 0),
+            }
+            for chunk in chunks
+        ]
+
+        retriever = ChromaRetriever(collection_name=collection_name)
+        chunks_added = retriever.ingest_documents(texts, metadatas)
+        total_docs = retriever.collection_count()
+
+        return {
+            "filename": filename,
+            "chunks_added": chunks_added,
+            "total_docs": total_docs,
+            "message": f"Uploaded {filename} and added {chunks_added} chunks"
+        }
+    except Exception as e:
+        logger.error(f"PDF upload error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"PDF upload failed: {str(e)}")
+    finally:
+        file.file.close()
+        if temp_path.exists():
+            temp_path.unlink()
+
+
 # ============================================================================
 # STARTUP EVENT
 # ============================================================================
@@ -216,7 +341,7 @@ async def startup_event():
     logger.info(f"Max retries: {settings.max_retries}")
     
     try:
-        retriever = ChromaRetriever()
+        retriever = ChromaRetriever(collection_name=ACTIVE_COLLECTION)
         doc_count = retriever.collection_count()
         logger.info(f"Documents in DB: {doc_count}")
     except Exception as e:
@@ -232,4 +357,3 @@ async def startup_event():
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("backend.main:app", host="0.0.0.0", port=8000, reload=True)
-

@@ -7,8 +7,10 @@ from backend.config import settings
 class ChromaRetriever:
     """Manages document retrieval using ChromaDB with Sentence Transformers embeddings."""
 
-    def __init__(self):
+    def __init__(self, collection_name: str = "rag_docs"):
         """Initialize ChromaDB client and collection."""
+        self.collection_name = collection_name
+
         # Initialize embedding function
         self.embedding_function = embedding_functions.SentenceTransformerEmbeddingFunction(
             model_name=settings.embedding_model
@@ -19,7 +21,7 @@ class ChromaRetriever:
 
         # Get or create collection
         self.collection = self.client.get_or_create_collection(
-            name="rag_docs",
+            name=collection_name,
             embedding_function=self.embedding_function,
             metadata={"hnsw:space": "cosine"}
         )
@@ -89,4 +91,3 @@ class ChromaRetriever:
     def collection_count(self) -> int:
         """Get the number of documents in the collection."""
         return self.collection.count()
-
